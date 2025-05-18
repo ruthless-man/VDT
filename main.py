@@ -447,7 +447,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--n-hidden', type=int, default=2)
     parser.add_argument('--n-steps', type=int, default=10000)
-    parser.add_argument('--batch-size', type=int, default=2048)
+    parser.add_argument('--batch-size', type=int, default=512)
     parser.add_argument('--learning-rate', type=float, default=3e-4)
     parser.add_argument('--alpha', type=float, default=0.005)
     parser.add_argument('--tau', type=float, default=0.5)
@@ -455,17 +455,14 @@ if __name__ == '__main__':
     parser.add_argument('--eval-period', type=int, default=100)
     parser.add_argument('--n-eval-episodes', type=int, default=5)
 
-
-    '''在线微调'''
     parser.add_argument("--ordering", type=int, default=0)
-    parser.add_argument("--init_temperature", type=float, default=0.1)
     parser.add_argument("--online_finetune", action="store_true", default=True)
     parser.add_argument("--replay_size", type=int, default=1000)
     parser.add_argument("--num_online_rollouts", type=int, default=1)
     parser.add_argument("--eval_interval", type=int, default=50)
     parser.add_argument("--max_online_iters", type=int, default=25000)
 
-    #用于DT的参数
+
     parser.add_argument('--K', type=int, default=20)
     parser.add_argument('--pct_traj', type=float, default=1.)
     parser.add_argument('--embed_dim', type=int, default=256)
@@ -477,7 +474,6 @@ if __name__ == '__main__':
     parser.add_argument("--log_to_wandb", action="store_true",default=False)
     parser.add_argument('--mode', type=str, default='normal')
 
-    #模型保存
     parser.add_argument('--checkpoint_dir', type=str, default='./determin_checkpoints', help='path to save/load checkpoints')
     parser.add_argument('--save_checkpoint', action='store_true', help='save model checkpoint')
 
