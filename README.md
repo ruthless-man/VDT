@@ -13,7 +13,7 @@ python main.py --env-name halfcheetah-medium-replay-v2
 ```
 
 
-## 📝 Citation
+## Citation
 
 If you find this work helpful in your research, please consider citing:
 
