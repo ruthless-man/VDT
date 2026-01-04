@@ -16,7 +16,7 @@ class TrajectoryModel(nn.Module):
         self.max_length = max_length
 
     def forward(self, states, actions, rewards, masks=None, attention_mask=None):
-     
+        # "masked" tokens or unspecified inputs can be passed in as None
         return None, None, None
 
     def get_action(self, states, actions, rewards, **kwargs):
@@ -56,7 +56,7 @@ def get_batch_online(trajectories, max_len, K, pct_traj , env_name, state_dim, a
     
     num_timesteps = max(int(pct_traj*num_timesteps), 1)
 
-    sorted_inds = np.argsort(returns)  
+    sorted_inds = np.argsort(returns)  # lowest to highest
     num_trajectories = 1
     timesteps = traj_lens[sorted_inds[-1]]
     ind = len(trajectories) - 2

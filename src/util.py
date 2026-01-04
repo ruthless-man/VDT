@@ -8,6 +8,7 @@ import copy
 
 DEFAULT_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# DEFAULT_DEVICE = torch.device('cpu')
 
 class Squeeze(nn.Module):
     def __init__(self, dim=None):
@@ -72,6 +73,7 @@ def sample_batch(dataset, batch_size):
 def evaluate_policy(env, qf,policy, env_targets, num_eval_episodes,scale, state_dim, act_dim, max_ep_len,mode,state_mean,state_std):
     returns, lengths = [], []
     log = dict()
+# for targets in env_targets:
     for _ in range(num_eval_episodes):
         with torch.no_grad():
             ret, length = evaluate_episode_rtg(
@@ -96,10 +98,6 @@ def evaluate_policy(env, qf,policy, env_targets, num_eval_episodes,scale, state_
         
 
 
-
-
-
-
 def set_seed(seed, env=None):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -117,9 +115,6 @@ def discount_cumsum(x, gamma):
     for t in reversed(range(x.shape[0]-1)):
         discount_cumsum[t] = x[t] + gamma * discount_cumsum[t+1]
     return discount_cumsum
-
-
-
 
 
 
@@ -172,21 +167,22 @@ def evaluate_episode_rtg(
     episode_return, episode_length = 0, 0
 
     for t in range(max_ep_len):
-
+ 
         remaining_steps = max_ep_len - t
         current_plan_horizon = min(plan_horizon, remaining_steps)
         
-
+   
         if current_plan_horizon <= 0:
-
+     
             with torch.no_grad():
                 _, action, _= model.get_action(
                     states=(states.to(dtype=torch.float32) - state_mean) / state_std,
                     actions=actions.to(dtype=torch.float32),
                     returns_to_go=target_return[:, -1].unsqueeze(1).to(dtype=torch.float32),
                     timesteps=timesteps.to(dtype=torch.long))
-            action = action.mean.squeeze(0).cpu().numpy()
+            action = action.squeeze(0).cpu().numpy()
         else:
+
             candidate_actions = []
             for perturbed_rtg in target_return:
                 _, action, _ = model.get_action(
@@ -195,15 +191,15 @@ def evaluate_episode_rtg(
                     returns_to_go=perturbed_rtg.to(dtype=torch.float32),
                     timesteps=timesteps.to(dtype=torch.long),
                 )
-                action= action.mean.reshape( -1, act_dim)[-1]
+         
                 action = action.clamp(*model.action_range)
                 candidate_actions.append(action.squeeze(0))
             candidate_actions = torch.stack(candidate_actions)
 
-
+   
             cumulative_q_values = []
             for action_index, action in enumerate(candidate_actions):
-
+      
                 if env_name:
                     temp_env = gym.make(env_name)
                     temp_env.reset()
@@ -219,11 +215,8 @@ def evaluate_episode_rtg(
                 current_rtg = target_return[action_index].clone().unsqueeze(0)
                 current_action = action.clone()
 
-
                 for step in range(current_plan_horizon):
-  
                     safe_timestep = min(t + step + 1, max_ep_len - 1)
-                    
 
                     with torch.no_grad():
                         q_val = q_network(
@@ -232,13 +225,10 @@ def evaluate_episode_rtg(
                         )
                         total_q += q_val.item()
 
-
                     temp_state, temp_reward, temp_done, _ = temp_env.step(
                         current_action.cpu().numpy()
                     )
-                    temp_state_tensor = torch.from_numpy(temp_state).to(
-                        device, dtype=torch.float32
-                    ).unsqueeze(0)
+                    temp_state_tensor = torch.from_numpy(temp_state).to(device, dtype=torch.float32).unsqueeze(0)
 
                     new_rtg = (current_rtg[0, -1] - temp_reward / scale) / 0.99
                     current_rtg = torch.cat([current_rtg, new_rtg.reshape(1, 1)], dim=1)
@@ -254,9 +244,9 @@ def evaluate_episode_rtg(
                             ], dim=1)
                         )
                     
-                    next_action = next_action.mean.reshape( -1, act_dim)[-1]
+
                     next_action = next_action.clamp(*model.action_range).unsqueeze(0)
-         
+ 
                     current_states = torch.cat([current_states, temp_state_tensor], dim=0)
                     current_actions = torch.cat([current_actions, next_action], dim=0)
                     current_action = next_action.squeeze(0)
@@ -269,6 +259,7 @@ def evaluate_episode_rtg(
 
             best_idx = torch.argmax(torch.tensor(cumulative_q_values))
             action = candidate_actions[best_idx].detach().cpu().numpy()
+
 
         state, reward, done, _ = env.step(action)
         
@@ -293,6 +284,8 @@ def evaluate_episode_rtg(
             break
 
     return episode_return, episode_length
+
+
 
 
 
@@ -327,7 +320,6 @@ def vec_evaluate_episode_rtg(
 
     states = (torch.from_numpy(state).reshape(num_envs, state_dim).to(device=device, dtype=torch.float32)).reshape(num_envs, -1, state_dim)
     next_states = torch.zeros(0, device=device, dtype=torch.float32)
-    action_log_probs = []
     actions = torch.zeros(0, device=device, dtype=torch.float32)
     rewards = torch.zeros(0, device=device, dtype=torch.float32)
 
@@ -358,12 +350,8 @@ def vec_evaluate_episode_rtg(
             timesteps=timesteps)
 
 
-        
-        if use_mean:
-            action = action.mean.reshape(num_envs, -1, act_dim)[:, -1]
-        else:
-            action = action.sample().reshape(num_envs, -1, act_dim)[:, -1]
-        
+
+        action=action.reshape(num_envs, -1, act_dim)[:, -1]
 
         action = action.clamp(*model.action_range)
 
@@ -373,7 +361,6 @@ def vec_evaluate_episode_rtg(
         reward=reward.reshape(1, 1)
         done=np.array([done])
         
-
 
         episode_return[unfinished] += reward[unfinished].reshape(-1, 1)
 

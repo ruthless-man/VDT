@@ -26,12 +26,12 @@ class ImplicitQLearning(nn.Module):
         self.policy = policy.to(DEFAULT_DEVICE)
 
         self.v_optimizer = optimizer_factory(self.vf.parameters())
-
-        self.policy_optimizer = Lamb(self.policy.parameters(),lr=learning_rate,weight_decay=5e-4,eps=1e-8)
+        self.policy_optimizer = optimizer_factory(self.policy.parameters())
+        # self.policy_optimizer = Lamb(self.policy.parameters(),lr=learning_rate,weight_decay=5e-4,eps=1e-8)
         self.qf1_optimizer = optimizer_factory(self.qf.q1.parameters())
         self.qf2_optimizer = optimizer_factory(self.qf.q2.parameters())
 
-        self.log_temperature_optimizer = torch.optim.Adam([self.policy.log_temperature],lr=1e-4,betas=[0.9, 0.999])
+
         
         self.policy_lr_schedule = CosineAnnealingLR(self.policy_optimizer, max_steps)
         self.tau = tau
@@ -50,11 +50,7 @@ class ImplicitQLearning(nn.Module):
             entropy = a_hat_dist.entropy().mean()
             # loss = -(log_likelihood + entropy_reg * entropy)
             loss = -(log_likelihood)
-            return (
-                loss,
-                -log_likelihood,
-                entropy,
-            )
+            return (loss,  -log_likelihood,  entropy)
         
         
         
@@ -77,7 +73,7 @@ class ImplicitQLearning(nn.Module):
                 target_q = self.q_target(observations, actions)
                 next_v = self.vf(next_observations)
 
-
+            # v, next_v = compute_batched(self.vf, [observations, next_observations])
 
             # Update value function
             adv = target_q - self.vf(observations)
@@ -86,14 +82,16 @@ class ImplicitQLearning(nn.Module):
             v_loss.backward()
             self.v_optimizer.step()
 
- 
+            # Update Q function
             targets = rewards + (1. - terminals.float()) * self.discount * next_v.detach()
             targets=targets.detach()
             qs = self.qf.both(observations, actions)
             qf1_loss = F.mse_loss(qs[0], targets)
             qf2_loss = F.mse_loss(qs[1], targets)
 
-
+            # self.q_optimizer.zero_grad(set_to_none=True)
+            # q_loss.backward()
+            # self.q_optimizer.step()
             self.qf1_optimizer.zero_grad(set_to_none=True)
             qf1_loss.backward()
             self.qf1_optimizer.step()
@@ -101,7 +99,7 @@ class ImplicitQLearning(nn.Module):
             qf2_loss.backward()
             self.qf2_optimizer.step()
 
-
+    
             update_exponential_moving_average(self.q_target, self.qf, self.alpha)
 
 
@@ -109,7 +107,7 @@ class ImplicitQLearning(nn.Module):
         states, actions, rewards, action_target, dones, rtg, timesteps, attention_mask, next_observations ,terminals= DT_batch
         
 
-        # Update policy
+ 
         state_dim = states.shape[-1]
         action_dim = actions.shape[-1]
 
@@ -117,28 +115,19 @@ class ImplicitQLearning(nn.Module):
             states, actions, rewards, action_target, rtg[:,:-1], timesteps, attention_mask=attention_mask,
         )
 
+        action_preds_ = action_preds.reshape(-1, action_dim)[attention_mask.reshape(-1) > 0]
+        action_target_ = action_target.reshape(-1, action_dim)[attention_mask.reshape(-1) > 0]
         state_preds = state_preds[:, :-1]
         state_target = states[:, 1:]
         states_loss = ((state_preds - state_target) ** 2)[attention_mask[:, :-1]>0].mean()
 
+        bc_losses= F.mse_loss(action_preds_, action_target_) + states_loss
 
 
-        
-        loss, nll, entropy = loss_fn(
-            action_preds,  # a_hat_dist
-            action_target,
-            attention_mask,
-            self.policy.temperature().detach(),  
-        )
-        
-        bc_losses= loss + states_loss
+        policy_loss = bc_losses
 
-        exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=EXP_ADV_MAX)
-        policy_loss = torch.mean(exp_adv * bc_losses)
-        # policy_loss = bc_losses
 
-        action_preds_mean = action_preds.mean     
-        action_preds_ = action_preds_mean.reshape(-1, action_dim)[attention_mask.reshape(-1) > 0]
+
         actor_states = states.reshape(-1, state_dim)[attention_mask.reshape(-1) > 0]
         qs = self.qf.both(actor_states, action_preds_)
         if np.random.uniform() > 0.5:
@@ -147,19 +136,21 @@ class ImplicitQLearning(nn.Module):
             q_loss = - qs[1].mean() / qs[0].abs().mean().detach()
 
 
-        policy_loss = policy_loss + 0.5* q_loss
+        policy_loss = policy_loss +  q_loss
+
+    
 
         self.policy_optimizer.zero_grad(set_to_none=True)
         policy_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.25)
+        # torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.25)
         self.policy_optimizer.step()
         self.policy_lr_schedule.step()
 
 
-        self.log_temperature_optimizer.zero_grad()
-        temperature_loss = (self.policy.temperature() * (entropy - self.policy.target_entropy).detach())
-        temperature_loss.backward()
-        self.log_temperature_optimizer.step()
+        # self.log_temperature_optimizer.zero_grad()
+        # temperature_loss = (self.policy.temperature() * (entropy - self.policy.target_entropy).detach())
+        # temperature_loss.backward()
+        # self.log_temperature_optimizer.step()
 
         logs['BC Loss'] = bc_losses.item()
         logs['Actor Loss'] = policy_loss.item()

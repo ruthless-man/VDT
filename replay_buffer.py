@@ -8,7 +8,7 @@ class ReplayBuffer(object):
             self.trajectories = trajectories
         else:
             returns = [traj["rewards"].sum() for traj in trajectories]
-            sorted_inds = np.argsort(returns)
+            sorted_inds = np.argsort(returns)  # lowest to highest
             self.trajectories = [
                 trajectories[ii] for ii in sorted_inds[-self.capacity :]
             ]

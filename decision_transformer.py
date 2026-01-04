@@ -10,92 +10,6 @@ from torch import distributions as pyd
 
 
 
-
-class TanhTransform(pyd.transforms.Transform):
-    domain = pyd.constraints.real
-    codomain = pyd.constraints.interval(-1.0, 1.0)
-    bijective = True
-    sign = +1
-
-    def __init__(self, cache_size=1):
-        super().__init__(cache_size=cache_size)
-
-    @staticmethod
-    def atanh(x):
-        return 0.5 * (x.log1p() - (-x).log1p())
-
-    def __eq__(self, other):
-        return isinstance(other, TanhTransform)
-
-    def _call(self, x):
-        return x.tanh()
-
-    def _inverse(self, y):
-        return self.atanh(y)
-
-    def log_abs_det_jacobian(self, x, y):
-        return 2.0 * (math.log(2.0) - x - F.softplus(-2.0 * x))
-
-
-
-class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
-
-    def __init__(self, loc, std):
-        self.loc = loc
-        self.std = std
-        self.base_dist = pyd.Normal(loc, std)
-
-        transforms = [TanhTransform()]
-        super().__init__(self.base_dist, transforms)
-
-    @property
-    def mean(self):
-        mu = self.loc
-        for tr in self.transforms:
-            mu = tr(mu)
-        return mu
-
-    def entropy(self, N=1):
-        # sample from the distribution and then compute
-        # the empirical entropy:
-        x = self.rsample((N,))
-        log_p = self.log_prob(x)
-
-        # log_p: (batch_size, context_len, action_dim),
-        return -log_p.mean(axis=0).sum(axis=2)
-
-    def log_likelihood(self, x):
-        return self.log_prob(x).sum(axis=2)
-    
-
-class DiagGaussianActor(nn.Module):
-
-    def __init__(self, hidden_dim, act_dim, log_std_bounds=[-5.0, 2.0]):
-        super().__init__()
-
-        self.mu = torch.nn.Linear(hidden_dim, act_dim)
-        self.log_std = torch.nn.Linear(hidden_dim, act_dim)
-        self.log_std_bounds = log_std_bounds
-
-        def weight_init(m):
-            if isinstance(m, torch.nn.Linear):
-                nn.init.orthogonal_(m.weight.data)
-                if hasattr(m.bias, "data"):
-                    m.bias.data.fill_(0.0)
-
-        self.apply(weight_init)
-
-    def forward(self, obs):
-        mu, log_std = self.mu(obs), self.log_std(obs)
-        log_std = torch.tanh(log_std)
-
-        log_std_min, log_std_max = self.log_std_bounds
-        log_std = log_std_min + 0.5 * (log_std_max - log_std_min) * (log_std + 1.0)
-        std = log_std.exp()
-        return SquashedNormal(mu, std)
-
-
-
 class DecisionTransformer(TrajectoryModel):
 
     def __init__(
@@ -166,10 +80,10 @@ class DecisionTransformer(TrajectoryModel):
         batch_size, seq_length = states.shape[0], states.shape[1]
 
         if attention_mask is None:
-            # attention mask for GPT: 1 if can be attended to, 0 if not
+   
             attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long, device=states.device)
 
-        # embed each modality with a different head
+  
         state_embeddings = self.embed_state(states)
         action_embeddings = self.embed_action(actions)
         returns_embeddings = self.embed_return(returns_to_go)
@@ -180,11 +94,19 @@ class DecisionTransformer(TrajectoryModel):
 
         time_embeddings = self.embed_timestep(timesteps)
 
-        state_embeddings = state_embeddings + order_embeddings
-        action_embeddings = action_embeddings + order_embeddings
-        returns_embeddings = returns_embeddings + order_embeddings
+ 
+        # state_embeddings = state_embeddings + order_embeddings
+        # action_embeddings = action_embeddings + order_embeddings
+        # returns_embeddings = returns_embeddings + order_embeddings
+
+        state_embeddings = state_embeddings + time_embeddings
+        action_embeddings = action_embeddings + time_embeddings
+        returns_embeddings = returns_embeddings + time_embeddings
 
 
+        # reward_embeddings = reward_embeddings + time_embeddings
+
+        # this makes the sequence look like (R_1, s_1, a_1, R_2, s_2, a_2, ...) which works nice in an autoregressive sense since states predict actions
         stacked_inputs = torch.stack((returns_embeddings, state_embeddings, action_embeddings), dim=1).permute(0, 2, 1, 3).reshape(batch_size, 3*seq_length, self.hidden_size)
         stacked_inputs = self.embed_ln(stacked_inputs)
 
@@ -195,7 +117,7 @@ class DecisionTransformer(TrajectoryModel):
         transformer_outputs = self.transformer(inputs_embeds=stacked_inputs,attention_mask=stacked_attention_mask,)
         x = transformer_outputs['last_hidden_state']
 
-
+        # reshape x so that the second dimension corresponds to the original returns (0), states (1), or actions (2); i.e. x[:,1,t] is the token for s_t
         x = x.reshape(batch_size, seq_length, 3, self.hidden_size).permute(0, 2, 1, 3)
 
         action_preds = self.predict_action(x[:, 1])
@@ -218,10 +140,11 @@ class DecisionTransformer(TrajectoryModel):
             returns_to_go = returns_to_go[:,-self.max_length:]
             timesteps = timesteps[:,-self.max_length:]
 
- 
+  
             attention_mask = torch.cat([torch.zeros(self.max_length-states.shape[1]), torch.ones(states.shape[1])])
             attention_mask = attention_mask.to(dtype=torch.long, device=states.device).reshape(1, -1)
 
+  
             states = torch.cat(
                 [torch.zeros((states.shape[0], self.max_length-states.shape[1], self.state_dim), device=states.device), states],dim=1).to(dtype=torch.float32)
             actions = torch.cat(
@@ -238,7 +161,7 @@ class DecisionTransformer(TrajectoryModel):
         _, action_preds, _ = self.forward(
             states, actions, returns_to_go=returns_to_go, timesteps=timesteps, attention_mask=attention_mask, **kwargs)
         
-        return _ , action_preds, _
+        return _ , action_preds[0,-1], _
     
     def clamp_action(self, action):
         return action.clamp(*self.action_range)

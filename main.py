@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ['CUDA_VISIBLE_DEVICES'] = '7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import gym
 import numpy as np
 import torch
@@ -97,7 +97,6 @@ def get_env_and_dataset(env_name,scale,raw_dataset,state_mean, state_std):
     
 
     if any(s in env_name for s in ('halfcheetah', 'hopper', 'walker2d')):
-
         dataset['rewards'] /= scale
     elif 'antmaze' in env_name:
         dataset['rewards'] -= 1.0
@@ -114,8 +113,8 @@ def main(args):
     
     if 'hopper' in args.env_name:
         max_ep_len = 1000
-        env_targets = [72000,36000, 18000, 7200, 3600, 1800,720]  # evaluation conditioning targets
-        scale = 1000.  # normalization for rewards/returns
+        env_targets = [72000,36000, 18000, 7200, 3600, 1800,720]  
+        scale = 1000.  
     elif 'halfcheetah' in args.env_name:
         max_ep_len = 1000
         env_targets = [12000, 9000, 6000]
@@ -124,30 +123,32 @@ def main(args):
         max_ep_len = 1000
         env_targets = [5000, 4000, 2500]
         scale = 1000.
-    elif 'reacher2d' in args.env_name:
-        max_ep_len = 100
-        env_targets = [76, 40]
-        scale = 10.
-    elif 'pen' in args.env_name:
-        max_ep_len = 1000
-        env_targets = [12000, 6000]
-        scale = 1000.
-    elif 'hammer' in args.env_name:
-        max_ep_len = 1000
-        env_targets = [12000, 6000, 3000]
-        scale = 1000.
-
-
 
 
     env = gym.make(args.env_name)
     state_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
     raw_dataset = env.get_dataset()
+
+    if 'next_observations' not in raw_dataset:
+        observations = raw_dataset['observations']
+        terminals = raw_dataset['terminals']
+        timeouts = raw_dataset['timeouts']
+        next_observations = np.empty_like(observations)
+
+        for i in range(len(observations) - 1):
+            if terminals[i] or timeouts[i]:
+                next_observations[i] = observations[i]  
+            else:
+                next_observations[i] = observations[i + 1]
+
+        next_observations[-1] = observations[-1]  
+
+        raw_dataset['next_observations'] = next_observations
+
+
     filtered_dataset = {k: raw_dataset[k] for k in ESSENTIAL_KEYS}
     trajectories = split_into_trajectories(filtered_dataset)
-
-
 
 
 
@@ -187,7 +188,7 @@ def main(args):
     sorted_inds = sorted_inds[-num_trajectories:]
 
     p_sample = traj_lens[sorted_inds] / sum(traj_lens[sorted_inds])
-    '''---------------------------------------------------------------------------------------------------------------'''
+
 
     offline_trajs = [trajectories[ii] for ii in sorted_inds]
 
@@ -197,19 +198,16 @@ def main(args):
             np.arange(num_trajectories),
             size=batch_size,
             replace=True,
-            p=p_sample,  # reweights so we sample according to timesteps
+            p=p_sample, 
         )
 
         s, a, r, d, rtg, timesteps, mask, target_a,next_observations,terminals = [], [], [], [], [], [], [], [],[],[]
         
         for i in range(batch_size):
             traj = trajectories[int(sorted_inds[batch_inds[i]])]
-            # if 'hopper-medium' in args.env_name:
-            #     si = random.randint(0, traj['rewards'].shape[0]-K-1) 
-            # else:
             si = random.randint(0, traj['rewards'].shape[0] - 1) 
 
-            # get sequences from dataset
+
             s.append(traj['observations'][si:si + max_len].reshape(1, -1, state_dim))
             next_observations.append(traj['next_observations'][si:si + max_len].reshape(1, -1, state_dim))
             a.append(traj['actions'][si:si + max_len].reshape(1, -1, act_dim))
@@ -217,6 +215,7 @@ def main(args):
             if 'terminals' in traj:
                 d.append(traj['terminals'][si:si + max_len].reshape(1, -1, 1))
             else:
+     
                 d.append(traj['dones'][si:si + max_len].reshape(1, -1, 1))
             terminals.append(traj['terminals'][si:si + max_len].reshape(1, -1, 1))
             timesteps.append(np.arange(si, si + s[-1].shape[1]).reshape(1, -1))
@@ -228,7 +227,7 @@ def main(args):
             if rtg[-1].shape[1] <= s[-1].shape[1]:
                 rtg[-1] = np.concatenate([rtg[-1], np.zeros((1, 1, 1))], axis=1)
             
-     
+
             tlen = s[-1].shape[1]
             s[-1] = np.concatenate([np.zeros((1, max_len - tlen, state_dim)), s[-1]], axis=1)
             s[-1] = (s[-1] - state_mean) / state_std
@@ -288,7 +287,7 @@ def main(args):
     attn_pdrop=args.dropout,
     scale=scale,
 
-    stochastic_policy=True,
+    stochastic_policy=False,
     ordering=args.ordering,
     init_temperature=args.init_temperature,
     target_entropy=target_entropy
@@ -299,6 +298,12 @@ def main(args):
     qf= TwinQ(obs_dim, act_dim, hidden_dim=args.hidden_dim, n_hidden=args.n_hidden)
     vf=ValueFunction(obs_dim, hidden_dim=args.hidden_dim, n_hidden=args.n_hidden)
 
+
+    
+    total_params = sum(p.numel() for p in qf.parameters() ) + sum(p.numel() for p in vf.parameters()) + sum(p.numel() for p in policy.parameters())
+
+
+ 
 
     iql = ImplicitQLearning(
         qf=qf,
@@ -315,6 +320,7 @@ def main(args):
 
     
     for step in trange(args.n_steps):
+ 
         outputs=iql.update(dataset, args.batch_size, DT_batch=get_batch(batch_size=args.batch_size,max_len=args.K))
         if (step+1) % args.eval_period == 0:
             a=evaluate_policy(env, qf,policy, env_targets, args.n_eval_episodes,scale,state_dim,act_dim,max_ep_len,args.mode, 
@@ -322,18 +328,16 @@ def main(args):
             outputs.update(a)
 
             if args.save_checkpoint:
-                if not os.path.exists(args.checkpoint_dir):
-                    os.makedirs(args.checkpoint_dir)
-                torch.save(qf.state_dict(), os.path.join(args.checkpoint_dir, f"qf_{step+1}.pth"))
-                torch.save(vf.state_dict(), os.path.join(args.checkpoint_dir, f"vf_{step+1}.pth"))
-                torch.save(policy.state_dict(), os.path.join(args.checkpoint_dir, f"policy_{step+1}.pth"))
-                print(f"Model saved at step {step+1}")
+
+                save_dir = os.path.join(args.checkpoint_dir, args.env_name)
+                os.makedirs(save_dir, exist_ok=True)
+
+                torch.save(qf.state_dict(), os.path.join(save_dir, f"qf_{step+1}.pth"))
+                torch.save(vf.state_dict(), os.path.join(save_dir, f"vf_{step+1}.pth"))
+                torch.save(policy.state_dict(), os.path.join(save_dir, f"policy_{step+1}.pth"))
+                print(f"Model saved at step {step+1} in {save_dir}")
 
 
-        if args.log_to_wandb:
-            wandb.log(outputs)
-
-    wandb.finish()
         
 
 
@@ -358,6 +362,8 @@ def main(args):
             )
 
         replay_buffer.add_new_trajs(trajs)
+        # total_transitions_sampled += np.sum(lengths)
+
         print("aug_traj/return", np.mean(returns)," \naug_traj/length", np.mean(lengths))
     
 
@@ -392,6 +398,11 @@ def main(args):
                                                          scale=scale,
                                                          batch_size=args.batch_size))
             
+            if (online_iter ) % args.eval_interval == 0 or is_last_iter:
+                a=evaluate_policy(env, qf,policy, env_targets, args.n_eval_episodes,scale,state_dim,act_dim,max_ep_len,args.mode, 
+                            state_mean, state_std)
+                outputs.update(a)
+
 
 
 
@@ -400,29 +411,29 @@ def main(args):
 if __name__ == '__main__':
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    parser.add_argument('--env-name', default='halfcheetah-medium-replay-v2')
-    parser.add_argument('--log-dir', default='./logs')
+    parser.add_argument('--env-name', default='hopper-medium-v2', type=str)
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--discount', type=float, default=0.99)
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--n-hidden', type=int, default=2)
-    parser.add_argument('--n-steps', type=int, default=3000)
-    parser.add_argument('--batch-size', type=int, default=256)
-    parser.add_argument('--learning-rate', type=float, default=1e-3)
+    parser.add_argument('--n-steps', type=int, default=10000)
+    parser.add_argument('--batch-size', type=int, default=2048)
+    parser.add_argument('--learning-rate', type=float, default=3e-4)
     parser.add_argument('--alpha', type=float, default=0.005)
     parser.add_argument('--tau', type=float, default=0.7)
     parser.add_argument('--beta', type=float, default=3)
-    parser.add_argument('--eval-period', type=int, default=500)
+    parser.add_argument('--eval-period', type=int, default=100)
     parser.add_argument('--n-eval-episodes', type=int, default=5)
+
 
 
     parser.add_argument("--ordering", type=int, default=0)
     parser.add_argument("--init_temperature", type=float, default=0.1)
-    parser.add_argument("--online_finetune", default=False)
+    parser.add_argument("--online_finetune", action="store_true", default=True)
     parser.add_argument("--replay_size", type=int, default=1000)
     parser.add_argument("--num_online_rollouts", type=int, default=1)
     parser.add_argument("--eval_interval", type=int, default=50)
-    parser.add_argument("--max_online_iters", type=int, default=10)
+    parser.add_argument("--max_online_iters", type=int, default=25000)
 
     parser.add_argument('--K', type=int, default=20)
     parser.add_argument('--pct_traj', type=float, default=1.)
@@ -433,9 +444,9 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument("--reward_tune", default='no', type=str)
     parser.add_argument("--log_to_wandb", action="store_true",default=False)
-    parser.add_argument('--mode', type=str, default='normal') 
+    parser.add_argument('--mode', type=str, default='normal')
 
-    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints', help='path to save/load checkpoints')
+    parser.add_argument('--checkpoint_dir', type=str, default='./determin_checkpoints', help='path to save/load checkpoints')
     parser.add_argument('--save_checkpoint', action='store_true', help='save model checkpoint')
 
 
